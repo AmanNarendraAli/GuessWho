@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Spotify Guess Who</h1>
+
+{% if user.is_authenticated %}
+<p>Welcome, {{ user.spotify_account.display_name }}!</p>
+<p>Sync status: {{ user.spotify_account.sync_status }}</p>
+<a href="{% url 'accounts:spotify_logout' %}">Log out</a>
+{% else %}
+<a href="{% url 'accounts:spotify_login' %}">Login with Spotify</a>
+{% endif %}
+{% endblock %}
