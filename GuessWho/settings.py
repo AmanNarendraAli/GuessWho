@@ -14,16 +14,15 @@ from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+import environ
 
+env = environ.Env(DEBUG=(bool, False))
+environ.Env.read_env(BASE_DIR / '.env')
+SECRET_KEY = env('SECRET_KEY')
+DEBUG = env('DEBUG')
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
-
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-=gd8--7$m1hr%@i@j-_^2fkdbo0(^t_u)=mc7uf6997)902%_b'
-
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
 
 ALLOWED_HOSTS = []
 
@@ -31,12 +30,18 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'channels',
+    'accounts',
+    'rooms',
+    'game',
+    'spotify_sync',
 ]
 
 MIDDLEWARE = [
@@ -73,10 +78,7 @@ WSGI_APPLICATION = 'GuessWho.wsgi.application'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    'default': env.db('DATABASE_URL', default='sqlite:///db.sqlite3')
 }
 
 
@@ -120,3 +122,24 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+ASGI_APPLICATION = 'GuessWho.asgi.application'
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [env('REDIS_URL', default='redis://localhost:6379/0')],
+        },
+    },
+}
+
+# Celery — background task queue
+CELERY_BROKER_URL = env('REDIS_URL', default='redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = env('REDIS_URL', default='redis://localhost:6379/0')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+
+SPOTIFY_CLIENT_ID = env('SPOTIFY_CLIENT_ID', default='')
+SPOTIFY_CLIENT_SECRET = env('SPOTIFY_CLIENT_SECRET', default='')
+SPOTIFY_REDIRECT_URI = env('SPOTIFY_REDIRECT_URI', default='http://localhost:8000/auth/spotify/callback')
+SPOTIFY_SCOPES = 'user-top-read user-read-recently-played'
