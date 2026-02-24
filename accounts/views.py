@@ -6,6 +6,7 @@ from django.contrib.auth import login, logout, get_user_model
 from django.shortcuts import render, redirect
 from django.utils import timezone
 from datetime import timedelta
+from spotify_sync.tasks import sync_spotify_data
 User = get_user_model()
 
 def landing(request):
@@ -75,7 +76,11 @@ def spotify_callback(request): #spotify sends user here with code and state
     spotify_account.refresh_token = refresh_token
     spotify_account.token_expires_at = timezone.now() + timedelta(seconds=expires_in)
     spotify_account.save()
-    # Step F: log the user in and send them to the landing page
+    
+    # Step F: Trigger the Spotify data sync in the background
+    sync_spotify_data.delay(user.id)
+
+    # Step G: log the user in and send them to the landing page
     login(request, user)
     return redirect('landing')   
 
