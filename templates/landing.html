@@ -2,9 +2,30 @@
 {% block content %}
 <h1>Spotify Guess Who</h1>
 
+{% if error %}
+<p style="color:red;">{{ error }}</p>
+{% endif %}
+
 {% if user.is_authenticated %}
 <p>Welcome, {{ user.spotify_account.display_name }}!</p>
 <p>Sync status: {{ user.spotify_account.sync_status }}</p>
+
+<hr>
+<h2>Create a Room</h2>
+<form method="post" action="{% url 'rooms:create_room' %}">
+    {% csrf_token %}
+    <button type="submit">Create Room</button>
+</form>
+
+<h2>Join a Room</h2>
+<form method="post" action="{% url 'rooms:join_room' %}">
+    {% csrf_token %}
+    <input type="text" name="room_code" placeholder="Enter room code" maxlength="5"
+           style="text-transform:uppercase;">
+    <button type="submit">Join</button>
+</form>
+
+<hr>
 <a href="{% url 'accounts:spotify_logout' %}">Log out</a>
 {% else %}
 <a href="{% url 'accounts:spotify_login' %}">Login with Spotify</a>

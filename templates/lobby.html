@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Room: {{ room.code }}</h1>
+<p>Share this code with your friends!</p>
+
+<h2>Players ({{ players|length }} / {{ room.max_players }})</h2>
+<ul id="player-list">
+    {% for p in players %}
+    <li id="player-{{ p.user.id }}">
+        {{ p.display_name }}
+        {% if p.is_host %}<strong>(HOST)</strong>{% endif %}
+        —
+        <span class="sync-status">
+            {{ p.user.spotify_account.sync_status }}
+        </span>
+    </li>
+    {% endfor %}
+</ul>
+
+{% if is_host %}
+<button id="start-btn" disabled>Start Game</button>
+<p id="start-msg" style="color:grey;">Waiting for all players to sync...</p>
+{% else %}
+<p>Waiting for the host to start the game…</p>
+{% endif %}
+
+<hr>
+<p><a href="{% url 'landing' %}">Leave Room</a></p>
+
+<script>
+    // ── WebSocket connection ──────────────────────────────────────
+    const roomCode = "{{ room.code }}";
+    const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
+    const wsUrl = `${wsScheme}://${window.location.host}/ws/room/${roomCode}/`;
+
+    const socket = new WebSocket(wsUrl);
+
+    socket.onopen = () => console.log("WebSocket connected to room", roomCode);
+    socket.onclose = () => console.log("WebSocket disconnected");
+
+    socket.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        console.log("WS message:", msg);
+
+        if (msg.type === "room.state") {
+            updatePlayerList(msg.players);
+            updateStartButton(msg.all_synced, msg.player_count);
+        }
+
+        if (msg.type === "room.player_joined") {
+            // Full state refresh is simpler for V1
+            // The consumer broadcasts room.state after every join
+        }
+
+        if (msg.type === "room.player_left") {
+            // Same — handled by room.state broadcast
+        }
+
+        if (msg.type === "match.starting") {
+            // Phase 3: redirect to game screen
+            alert("Game is starting!");
+        }
+    };
+
+    // ── UI update helpers ────────────────────────────────────────
+    function updatePlayerList(players) {
+        const list = document.getElementById("player-list");
+        list.innerHTML = "";
+        players.forEach(p => {
+            const li = document.createElement("li");
+            li.id = `player-${p.user_id}`;
+            let text = p.display_name;
+            if (p.is_host) text += " <strong>(HOST)</strong>";
+            text += ` — <span class="sync-status">${p.sync_status}</span>`;
+            li.innerHTML = text;
+            list.appendChild(li);
+        });
+
+        // Update player count in heading
+        const h2 = document.querySelector("h2");
+        h2.textContent = `Players (${players.length} / {{ room.max_players }})`;
+    }
+
+    function updateStartButton(allSynced, playerCount) {
+        const btn = document.getElementById("start-btn");
+        const msg = document.getElementById("start-msg");
+        if (!btn) return;  // not the host
+
+        const canStart = allSynced && playerCount >= {{ room.min_players }};
+        btn.disabled = !canStart;
+
+        if (playerCount < {{ room.min_players }}) {
+            msg.textContent = `Need at least {{ room.min_players }} players to start.`;
+            msg.style.color = "grey";
+        } else if (!allSynced) {
+            msg.textContent = "Waiting for all players to sync…";
+            msg.style.color = "grey";
+        } else {
+            msg.textContent = "All players synced — ready to start!";
+            msg.style.color = "green";
+        }
+    }
+
+    // ── Host: Start Game ────────────────────────────────────────
+    const startBtn = document.getElementById("start-btn");
+    if (startBtn) {
+        startBtn.addEventListener("click", () => {
+            socket.send(JSON.stringify({ type: "match.start" }));
+        });
+    }
+</script>
+{% endblock %}
