@@ -88,3 +88,25 @@ def lobby(request, room_code):
         'players': players,
         'is_host': is_host,
     })
+
+@login_required(login_url='/')
+def leave_room(request, room_code):
+    room = get_object_or_404(Room, code=room_code)
+    room_player = room.players.filter(user=request.user).first()
+
+    if room_player:
+        was_host = room_player.is_host
+        room_player.delete()
+
+        # If host left, transfer to next player
+        if was_host:
+            next_player = room.players.order_by('joined_at').first()
+            if next_player:
+                next_player.is_host = True
+                next_player.save(update_fields=['is_host'])
+            else:
+                # No players left — close the room
+                room.status = 'closed'
+                room.save(update_fields=['status'])
+
+    return redirect('landing')

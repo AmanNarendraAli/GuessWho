@@ -25,7 +25,7 @@
 {% endif %}
 
 <hr>
-<p><a href="{% url 'landing' %}">Leave Room</a></p>
+<p><a href="{% url 'rooms:leave_room' room.code %}">Leave Room</a></p>
 
 <script>
     // ── WebSocket connection ──────────────────────────────────────
@@ -86,19 +86,20 @@
         const msg = document.getElementById("start-msg");
         if (!btn) return;  // not the host
 
-        const canStart = allSynced && playerCount >= {{ room.min_players }};
-        btn.disabled = !canStart;
+        const canStart = allSynced && playerCount >= {{ room.min_players }
+    };
+    btn.disabled = !canStart;
 
-        if (playerCount < {{ room.min_players }}) {
-            msg.textContent = `Need at least {{ room.min_players }} players to start.`;
-            msg.style.color = "grey";
-        } else if (!allSynced) {
-            msg.textContent = "Waiting for all players to sync…";
-            msg.style.color = "grey";
-        } else {
-            msg.textContent = "All players synced — ready to start!";
-            msg.style.color = "green";
-        }
+    if (playerCount < {{ room.min_players }}) {
+        msg.textContent = `Need at least {{ room.min_players }} players to start.`;
+        msg.style.color = "grey";
+    } else if (!allSynced) {
+        msg.textContent = "Waiting for all players to sync…";
+        msg.style.color = "grey";
+    } else {
+        msg.textContent = "All players synced — ready to start!";
+        msg.style.color = "green";
+    }
     }
 
     // ── Host: Start Game ────────────────────────────────────────

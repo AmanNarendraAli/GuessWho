@@ -9,7 +9,7 @@ Build a **Jackbox-style multiplayer Spotify social game** for **2–8 players**:
 - Other players join via a short room code
 - VIP starts the game
 - The game runs in real time
-- Each round shows a **song + artist + cover art**
+- Each round plays a **~15-second audio clip** and shows **song title + artist + cover art**
 - Players guess **which player(s)** have listened to it
 - **Multi-select answers are allowed**
 - **Points awarded for correct selections**
@@ -79,6 +79,7 @@ This affects UI layout, websocket behavior, and testing priorities, but does **n
 
 ## Round Concept (Guess Who)
 Each round presents a **track clue**:
+- **~15-second audio clip** (sourced from YouTube)
 - **Song title**
 - **Artist**
 - **Cover art**
@@ -191,14 +192,16 @@ This keeps rounds varied and replayable.
 - **Redis** (cache + Channels layer + Celery broker)
 - **Django Channels** (real-time multiplayer via WebSockets)
 - **Celery** (background Spotify sync + precompute jobs)
+- **yt-dlp** (YouTube audio stream URL extraction)
 - **HTMX + Alpine.js** *or* lightweight JS frontend (recommended for speed)
 - **Docker Compose** (local development)
 
 ### Why this stack
 - Django keeps auth/admin/data modeling productive
 - Channels gives smooth real-time rooms and game state
-- Celery prevents blocking on Spotify syncs
+- Celery prevents blocking on Spotify syncs and YouTube audio resolution
 - Redis supports both websocket fanout and cache/state
+- yt-dlp reliably extracts direct audio stream URLs from YouTube without needing an API key
 - You can build a polished V1 fast without React complexity
 
 ---
@@ -208,11 +211,12 @@ This keeps rounds varied and replayable.
 You explicitly want this to be efficient — correct instinct.
 
 ### Golden Rule
-**No Spotify API calls during gameplay.**
+**No Spotify API calls or YouTube lookups during gameplay.**
 
 Everything needed for a match should be:
 - pre-synced,
 - precomputed,
+- audio URLs resolved,
 - and ready before the first round starts.
 
 ### Efficiency Strategy
@@ -221,15 +225,19 @@ Everything needed for a match should be:
 3. When game starts:
    - build track→players ownership mapping
    - generate all 10 rounds at once
-   - cache round payloads and match state in Redis
-4. Gameplay runs from precomputed data only
-5. Persist results asynchronously / minimally
+   - resolve YouTube audio URLs for all 10 tracks (parallel Celery tasks)
+   - cache round payloads (including audio URLs) and match state in Redis
+4. Gameplay runs from precomputed data only (audio streams directly from YouTube CDN)
+5. Client prefetches next round's audio during reveal/scoreboard phase
+6. Persist results asynchronously / minimally
 
 ### Performance Targets (V1)
 - Lobby updates: sub-200ms perceived latency
 - Round broadcast to clients: sub-500ms perceived
 - Answer submit ack: very fast (sub-150ms server-side target)
 - Reveal broadcast: sub-300ms perceived
+- Audio pre-resolve (all 10 tracks): under 15s total (parallel)
+- Audio prefetch buffer: 7s (4s reveal + 3s scoreboard) before next round
 
 ---
 
@@ -264,10 +272,43 @@ Store normalized metadata:
 - Preview URL (nullable, for future)
 - External Spotify URL (optional)
 - Duration (optional)
+- YouTube video ID (nullable, cached from search)
 
 ### Important Design Choice
-V1 does **not** depend on Spotify audio features.
-This avoids fragility and keeps gameplay focused on ownership guessing.
+V1 does **not** use Spotify's preview URLs for audio (these are unreliable and region-locked).
+Instead, audio is sourced from YouTube: the server searches YouTube by track name + artist,
+caches the video ID, and resolves a direct audio stream URL via `yt-dlp` at match start time.
+This keeps audio reliable across regions while keeping gameplay focused on ownership guessing.
+
+---
+
+## YouTube Audio Integration Plan
+
+### Why YouTube (Not Spotify Previews or Deezer)
+Spotify's `preview_url` field is unreliable — many tracks return `null`, and availability is region-dependent. Deezer's API is geo-blocked in several countries (including India). YouTube has the widest global catalog and no region restrictions for audio access.
+
+### How It Works
+1. **Search:** For each track, search YouTube with `"{track name}" "{artist}" official audio`
+2. **Cache:** Store the `youtube_video_id` on `SpotifyTrack` (persistent — video IDs don't change)
+3. **Resolve:** At match start, use `yt-dlp` to extract a direct audio stream URL from the cached video ID
+4. **Serve:** Send the audio URL to clients in the `round.started` payload; browser `<audio>` element plays it directly from YouTube's CDN
+
+### When Resolution Happens
+- **YouTube search + video ID caching:** during match generation (after VIP clicks Start)
+- **Audio stream URL extraction:** same step, in parallel via Celery
+- **Client prefetching:** during reveal/scoreboard phase, client preloads the next round's audio
+
+### Audio Clip Strategy
+- Clip duration: **~15 seconds**
+- Start offset: configurable (default: 30s into the track, or 0 if track is shorter)
+- The client handles clipping via `<audio>` element `currentTime` + a JavaScript timer
+- No server-side audio processing or file storage needed
+
+### Stream URL Expiry
+YouTube CDN URLs are valid for ~6 hours. A match lasts ~15 minutes. No refresh logic needed.
+
+### Fallback
+If audio resolution fails for a track (rare), the round plays without audio — just song title + artist + cover art. The game still works; audio is an enhancement, not a hard dependency.
 
 ---
 
@@ -308,6 +349,7 @@ Normalized track catalog.
 - `preview_url` (nullable)
 - `external_url` (nullable)
 - `duration_ms` (nullable)
+- `youtube_video_id` (nullable; cached YouTube search result, persistent)
 - timestamps
 
 ### `UserTrackEvidence`
@@ -373,6 +415,8 @@ Per-player match stats and score.
 - `prompt_type` (`track_ownership`)
 - `track` (FK to `SpotifyTrack`)
 - `truth_players_json` (list of match_player IDs)
+- `audio_url` (nullable; resolved YouTube stream URL, transient per match)
+- `audio_start_offset_s` (default 30; where in the track to start the clip)
 - `started_at`
 - `deadline_at`
 - `revealed_at`
@@ -598,13 +642,15 @@ This helps players trust the game.
 
 ## Avoid During Gameplay
 - Spotify API requests
+- YouTube searches or yt-dlp calls
 - Heavy DB joins every second
 - Recomputing truth mappings mid-match
 
 ### Precompute Once Per Match
 Store/calculate up front:
 - `track_id -> [match_player_ids]`
-- round payloads
+- round payloads (including audio URLs)
+- YouTube audio stream URLs for all round tracks
 - match config snapshot
 - player ordering / display names
 
@@ -692,6 +738,7 @@ Store/calculate up front:
 - Disabled start reason if blocked (“Waiting for all players to sync”)
 
 ## 4) Round Screen
+- **Audio player** (auto-plays ~15s clip; simple play/pause controls, mobile-friendly)
 - Song title
 - Artist
 - Cover art
@@ -751,7 +798,7 @@ Store/calculate up front:
 - `room.player_left`
 - `room.sync_status`
 - `match.generating`
-- `round.started`
+- `round.started` `{track, audio_url, audio_start_offset_s, deadline, ...}`
 - `round.locked`
 - `round.reveal`
 - `scoreboard.update`
@@ -840,9 +887,10 @@ Keep schemas versioned if possible (`"v": 1`).
 
 ---
 
-## Phase 3 — Game Engine V1 (Round Generation + Match State Machine) (5–7 days)
+## Phase 3 — Game Engine V1 (Round Generation + Match State Machine + Audio) (6–9 days)
 ### Goals
 - Generate valid 10-round matches from synced evidence
+- Resolve YouTube audio for all round tracks
 - Implement server state machine
 - Persist rounds/truth sets
 
@@ -851,19 +899,29 @@ Keep schemas versioned if possible (`"v": 1`).
 - Build `track -> players` inverse mapping
 - Candidate filtering/scoring
 - Diversity-aware round selection (single/shared mix)
+- YouTube audio resolution pipeline:
+  - Search YouTube by `"{track name}" "{artist}" official audio`
+  - Cache `youtube_video_id` on `SpotifyTrack` (persistent, doesn't expire)
+  - Resolve direct audio stream URL via `yt-dlp` (transient, per match)
+  - Run all 10 resolutions in parallel via Celery
+  - Validate duration against `SpotifyTrack.duration_ms` where available
+  - Fallback: if resolution fails for a track, round plays without audio
 - Match config snapshot (timers + scoring rules)
 - Match state transitions
-- Cache active match state in Redis
+- Cache active match state in Redis (including audio URLs)
 
 ### Deliverables
-- Pressing Start creates a full playable match
+- Pressing Start creates a full playable match with audio
 - Rounds support single and multi-player truth sets
+- Audio resolves for all 10 rounds before first round begins
 
 ### Validation Tests
 - Works with 2 players
 - Works with 8 players
 - No duplicate tracks in same match
 - Handles sparse data gracefully
+- Audio resolves correctly for known tracks
+- Graceful fallback when audio resolution fails
 
 ---
 
@@ -876,7 +934,9 @@ Keep schemas versioned if possible (`"v": 1`).
 
 ### Tasks
 - Gameplay websocket consumer/events
-- Round start broadcast + deadline timestamp
+- Round start broadcast + deadline timestamp + audio URL
+- Audio player UI (auto-play ~15s clip, play/pause controls, mobile-friendly)
+- Client-side audio prefetching (silently load next round's audio during reveal/scoreboard)
 - Multi-select answer UI + state sync
 - `round.update_answer` handling
 - Deadline lock logic (server-side)
@@ -1056,6 +1116,9 @@ These metrics will help tune scoring and pacing.
 - Wrong single guess penalty: **0**
 - Negative scores: **allowed**
 - Room code length: **5**
+- Audio clip duration: **~15s** (sourced from YouTube)
+- Audio start offset: **30s** into track (fallback: 0 if shorter)
+- Audio prefetch: **during reveal + scoreboard of previous round**
 - Room idle expiry: **2 hours**
 
 ---
@@ -1063,7 +1126,7 @@ These metrics will help tune scoring and pacing.
 ## Future Extensions (After V1)
 
 ### Gameplay
-- Audio preview rounds (when preview URL exists)
+- Full-song playback mode (30s+ clips, longer timer)
 - “Most likely” prediction mode (not strict evidence-based)
 - Confidence betting
 - Team mode (2v2 or 3v3)
@@ -1094,7 +1157,13 @@ These metrics will help tune scoring and pacing.
 **Mitigation:** prioritize a fast playable V1 and tune from real playtests.
 
 ## Risk 4: Gameplay jank due to live external calls
-**Mitigation:** zero Spotify calls during gameplay; precompute everything on start.
+**Mitigation:** zero Spotify or YouTube calls during gameplay; precompute everything (including audio URLs) on start.
+
+## Risk 5: YouTube audio resolution failures
+**Mitigation:** cache `youtube_video_id` persistently on `SpotifyTrack` to avoid repeated searches. Resolve stream URLs in parallel during match generation. If a track fails, round plays without audio (text + cover art fallback). YouTube CDN URLs are valid for ~6 hours — well within a 15-minute match.
+
+## Risk 6: yt-dlp rate limiting or breakage
+**Mitigation:** 10 requests per match is well under any rate limit. Cache video IDs to avoid redundant searches across matches. Keep `yt-dlp` updated — it tracks YouTube changes actively. For production scale, consider a dedicated audio resolution worker.
 
 ---
 
