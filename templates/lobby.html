@@ -25,11 +25,42 @@
 {% endif %}
 
 <hr>
-<p><a href="{% url 'rooms:leave_room' room.code %}">Leave Room</a></p>
+<p><a id="leave-link" href="{% url 'rooms:leave_room' room.code %}">Leave Room</a></p>
 
 <script>
-    // ── WebSocket connection ──────────────────────────────────────
+    // ── Cross-tab sync via localStorage ─────────────────────────
+    const currentUserId = {{ user.id }};
     const roomCode = "{{ room.code }}";
+    let isLeaving = false;  // Tracks explicit Leave Room click
+
+    window.addEventListener('storage', (e) => {
+        if (e.key === 'guesswho_room_left') {
+            if (typeof socket !== 'undefined' && socket.readyState === WebSocket.OPEN) {
+                socket.close();
+            }
+            window.location.href = '/';
+        }
+    });
+
+    function sendLeaveBeacon() {
+        if (isLeaving) return;
+
+        const blob = new Blob([JSON.stringify({ t: Date.now() })], {
+            type: "application/json"
+        });
+
+        const ok = navigator.sendBeacon(`/rooms/${roomCode}/beacon-leave/`, blob);
+        console.log("leave beacon queued:", ok);
+    }
+
+    window.addEventListener("pagehide", sendLeaveBeacon);
+    // Intercept Leave Room click to notify other tabs before navigating
+    document.getElementById('leave-link').addEventListener('click', (e) => {
+        isLeaving = true;
+        localStorage.setItem('guesswho_room_left', Date.now().toString());
+    });
+
+    // ── WebSocket connection ──────────────────────────────────────
     const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
     const wsUrl = `${wsScheme}://${window.location.host}/ws/room/${roomCode}/`;
 
@@ -43,6 +74,13 @@
         console.log("WS message:", msg);
 
         if (msg.type === "room.state") {
+            // If we're no longer in the player list, redirect out
+            const stillInRoom = msg.players.some(p => p.user_id === currentUserId);
+            if (!stillInRoom) {
+                socket.close();
+                window.location.href = '/';
+                return;
+            }
             updatePlayerList(msg.players);
             updateStartButton(msg.all_synced, msg.player_count);
         }
@@ -84,24 +122,22 @@
     function updateStartButton(allSynced, playerCount) {
         const btn = document.getElementById("start-btn");
         const msg = document.getElementById("start-msg");
-        if (!btn) return;  // not the host
+        if (!btn) return; // not host
 
-        const canStart = allSynced && playerCount >= {{ room.min_players }
-    };
-    btn.disabled = !canStart;
+        const canStart = allSynced && playerCount >= {{ room.min_players }};
+        btn.disabled = !canStart;
 
-    if (playerCount < {{ room.min_players }}) {
-        msg.textContent = `Need at least {{ room.min_players }} players to start.`;
-        msg.style.color = "grey";
-    } else if (!allSynced) {
-        msg.textContent = "Waiting for all players to sync…";
-        msg.style.color = "grey";
-    } else {
-        msg.textContent = "All players synced — ready to start!";
-        msg.style.color = "green";
+        if (playerCount < {{ room.min_players }}) {
+            msg.textContent = "Need at least {{ room.min_players }} players to start.";
+            msg.style.color = "grey";
+        } else if (!allSynced) {
+            msg.textContent = "Waiting for all players to sync…";
+            msg.style.color = "grey";
+        } else {
+            msg.textContent = "All players synced — ready to start!";
+            msg.style.color = "green";
+        }
     }
-    }
-
     // ── Host: Start Game ────────────────────────────────────────
     const startBtn = document.getElementById("start-btn");
     if (startBtn) {

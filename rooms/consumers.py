@@ -25,15 +25,31 @@ class RoomConsumer(WebsocketConsumer):
         self.room_player.save(update_fields=['connection_state'])
         self._broadcast_room_state()
 
-    def disconnect(self,close_code):
-        if hasattr(self,'room_player'):
-            self.room_player.connection_state = 'disconnected'
-            self.room_player.save(update_fields=['connection_state'])
+    def disconnect(self, close_code):
+        if hasattr(self, 'room_player'):
+            try:
+                # Refresh — leave_room view may have already deleted it
+                self.room_player.refresh_from_db()
+                room = self.room_player.room
+                was_host = self.room_player.is_host
+                self.room_player.delete()
+
+                if was_host:
+                    next_player = room.players.order_by('joined_at').first()
+                    if next_player:
+                        next_player.is_host = True
+                        next_player.save(update_fields=['is_host'])
+                    else:
+                        room.status = 'closed'
+                        room.save(update_fields=['status'])
+            except RoomPlayer.DoesNotExist:
+                pass  # Already removed by leave_room view
+
         if hasattr(self, 'room_group_name'):
             async_to_sync(self.channel_layer.group_discard)(
                 self.room_group_name, self.channel_name
             )
-        self._broadcast_room_state()
+            self._broadcast_room_state()
 
     def receive(self, text_data):
         """Handle incoming messages from clients."""
@@ -133,18 +149,21 @@ class RoomConsumer(WebsocketConsumer):
             } #sends message to all clients in room that the room state has changed
         )
 
-        #group message handlers - called when a group_send message is received
-        def room_state(self, event):
-            self.send(text_data=json.dumps({
-                'type':'room.state',
-                'players':event['players'],
-                'all_synced':event['all_synced'],
-                'player_count':event['player_count'],
-                'room_status':event['room_status'],
-            }))
+    # ── Group message handlers ────────────────────────────────
+    # Called when a group_send message is received.
+    # Method name matches the 'type' field (dots → underscores).
 
-        def match_starting(self,event):
-            self.send(text_data=json.dumps({
-                'type':'match.starting',
-                'message':event['message'],
-            }))
+    def room_state(self, event):
+        self.send(text_data=json.dumps({
+            'type':'room.state',
+            'players':event['players'],
+            'all_synced':event['all_synced'],
+            'player_count':event['player_count'],
+            'room_status':event['room_status'],
+        }))
+
+    def match_starting(self,event):
+        self.send(text_data=json.dumps({
+            'type':'match.starting',
+            'message':event['message'],
+        }))

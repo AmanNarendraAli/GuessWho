@@ -12,21 +12,77 @@
 
 <hr>
 <h2>Create a Room</h2>
-<form method="post" action="{% url 'rooms:create_room' %}">
+<form id="create-form" method="post" action="{% url 'rooms:create_room' %}">
     {% csrf_token %}
     <button type="submit">Create Room</button>
 </form>
 
 <h2>Join a Room</h2>
-<form method="post" action="{% url 'rooms:join_room' %}">
+<form id="join-form" method="post" action="{% url 'rooms:join_room' %}">
     {% csrf_token %}
-    <input type="text" name="room_code" placeholder="Enter room code" maxlength="5"
-           style="text-transform:uppercase;">
+    <input type="text" name="room_code" placeholder="Enter room code" maxlength="5" style="text-transform:uppercase;">
     <button type="submit">Join</button>
 </form>
 
 <hr>
 <a href="{% url 'accounts:spotify_logout' %}">Log out</a>
+
+<script>
+    function interceptForm(form) {
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(form);
+
+            try {
+                const resp = await fetch(form.action, {
+                    method: 'POST',
+                    body: formData,
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    redirect: 'follow',
+                });
+
+                // If the server returned JSON, check for confirmation
+                const contentType = resp.headers.get('content-type') || '';
+                if (contentType.includes('application/json')) {
+                    const data = await resp.json();
+                    if (data.confirm_needed) {
+                        const target = data.action === 'join'
+                            ? `room ${data.target_room}`
+                            : 'a new room';
+                        const ok = confirm(
+                            `You're already in room ${data.current_room}. ` +
+                            `Leave it and ${data.action === 'join' ? 'join' : 'create'} ${target}?`
+                        );
+                        if (!ok) return;
+
+                        // Re-submit with confirm=1
+                        formData.append('confirm', '1');
+                        const resp2 = await fetch(form.action, {
+                            method: 'POST',
+                            body: formData,
+                            redirect: 'follow',
+                        });
+                        // Notify other tabs that we switched rooms
+                        localStorage.setItem('guesswho_room_left', Date.now().toString());
+                        window.location.href = resp2.url;
+                        return;
+                    }
+                }
+
+                // Normal redirect (no confirmation needed)
+                window.location.href = resp.url;
+            } catch (err) {
+                console.error('Form submission error:', err);
+                // Fallback: just submit normally
+                form.submit();
+            }
+        });
+    }
+
+    interceptForm(document.getElementById('create-form'));
+    interceptForm(document.getElementById('join-form'));
+</script>
+
 {% else %}
 <a href="{% url 'accounts:spotify_login' %}">Login with Spotify</a>
 {% endif %}
